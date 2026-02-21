@@ -1,9 +1,8 @@
-import init, { init_webgl, draw_frame, set_input_state } from './pkg/wss_game.js';
+import init, { init_webgl, draw_frame, set_input_state, load_texture, load_model } from './pkg/wss_game.js';
 
 let offscreenCanvas = null;
 let isInitialized = false;
 
-// Input state matching the structure sent from main.js
 let inputState = {
     forward: false,
     backward: false,
@@ -18,7 +17,6 @@ let inputState = {
 function animate() {
     if (offscreenCanvas && isInitialized) {
         try {
-            // Send the latest input state to Rust before drawing
             set_input_state(
                 inputState.forward,
                 inputState.backward,
@@ -38,13 +36,43 @@ function animate() {
     self.requestAnimationFrame(animate);
 }
 
+async function loadAssets() {
+    try {
+        // Load Sprite Texture: shelly.png
+        // Use relative path from 'src/worker.js' to 'rs/assets/' -> '../rs/assets/'
+        const shellyResp = await fetch('../rs/assets/shelly.png');
+        if (!shellyResp.ok) throw new Error(`Failed to load shelly.png: ${shellyResp.statusText}`);
+        const shellyBlob = await shellyResp.blob();
+        const shellyBitmap = await createImageBitmap(shellyBlob, { imageOrientation: 'flipY' });
+        load_texture("shelly", shellyBitmap);
+        console.log("Loaded texture: shelly");
+
+        // Load Fox Texture: fox.png
+        const foxTexResp = await fetch('../rs/assets/fox.png');
+        if (!foxTexResp.ok) throw new Error(`Failed to load fox.png: ${foxTexResp.statusText}`);
+        const foxTexBlob = await foxTexResp.blob();
+        const foxBitmap = await createImageBitmap(foxTexBlob, { imageOrientation: 'flipY' });
+        load_texture("fox_tex", foxBitmap);
+        console.log("Loaded texture: fox_tex");
+
+        // Load Fox Model: fox.obj
+        const modelResp = await fetch('../rs/assets/fox.obj');
+        if (!modelResp.ok) throw new Error(`Failed to load fox.obj: ${modelResp.statusText}`);
+        const modelText = await modelResp.text();
+        load_model("fox", modelText);
+        console.log("Loaded model: fox");
+        
+    } catch (e) {
+        console.error("Asset loading error:", e);
+    }
+}
+
 self.onmessage = async (event) => {
     const { type, canvas, width, height, state } = event.data;
 
     switch (type) {
         case 'init':
             offscreenCanvas = canvas;
-            // Determine initial dimensions from the transferred canvas or passed data
             if (width && height) {
                 offscreenCanvas.width = width;
                 offscreenCanvas.height = height;
@@ -56,6 +84,10 @@ self.onmessage = async (event) => {
                 init_webgl(offscreenCanvas);
                 isInitialized = true;
                 console.log("WebGL initialized in worker");
+                
+                // Load assets after init
+                await loadAssets();
+                
                 self.requestAnimationFrame(animate);
             } catch (e) {
                 console.error("Failed to initialize WebGL:", e);
@@ -66,15 +98,10 @@ self.onmessage = async (event) => {
             if (offscreenCanvas) {
                 offscreenCanvas.width = width;
                 offscreenCanvas.height = height;
-                // Note: Rust side usually queries canvas.width/height directly in draw_frame
-                // so explicit resize call might not be needed if we check dimensions there,
-                // but setting canvas properties here is required.
             }
             break;
 
         case 'input':
-            // Update local state, which is pushed to Rust in the render loop
-            // This decouples input frequency from render frequency
             Object.assign(inputState, state);
             break;
     }
