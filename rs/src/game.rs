@@ -29,6 +29,7 @@ pub struct InputState {
     pub right: bool,
     pub up: bool,
     pub down: bool,
+    pub flashlight: bool,
 }
 
 #[derive(Clone, Copy)]

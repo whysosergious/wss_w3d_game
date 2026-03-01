@@ -25,12 +25,26 @@ pub struct Renderer {
     u_shadow_map: Option<WebGlUniformLocation>,
     u_light_space_matrix: Option<WebGlUniformLocation>,
 
-    // Shadow Mapping
+    // Spotlight Uniforms
+    u_flashlight_on: Option<WebGlUniformLocation>,
+    u_flashlight_pos: Option<WebGlUniformLocation>,
+    u_flashlight_dir: Option<WebGlUniformLocation>,
+    u_flashlight_cutoff: Option<WebGlUniformLocation>,
+    u_flashlight_outer_cutoff: Option<WebGlUniformLocation>,
+    u_shadow_map_size: Option<WebGlUniformLocation>,
+
+    // Shadow Mapping (Top Light)
     shadow_program: WebGlProgram,
     shadow_fbo: WebGlFramebuffer,
     shadow_map_texture: WebGlTexture,
     u_shadow_light_space: Option<WebGlUniformLocation>,
     u_shadow_model: Option<WebGlUniformLocation>,
+
+    // Shadow Mapping (Flashlight)
+    flashlight_shadow_fbo: WebGlFramebuffer,
+    flashlight_shadow_map_texture: WebGlTexture,
+    u_flashlight_shadow_map: Option<WebGlUniformLocation>,
+    u_flashlight_space_matrix: Option<WebGlUniformLocation>,
 }
 
 pub struct Mesh {
@@ -76,6 +90,8 @@ impl Renderer {
         gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_MAG_FILTER, WebGl2RenderingContext::NEAREST as i32);
         gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_WRAP_S, WebGl2RenderingContext::CLAMP_TO_EDGE as i32);
         gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_WRAP_T, WebGl2RenderingContext::CLAMP_TO_EDGE as i32);
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_COMPARE_MODE, WebGl2RenderingContext::COMPARE_REF_TO_TEXTURE as i32);
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_COMPARE_FUNC, WebGl2RenderingContext::LEQUAL as i32);
 
         gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&shadow_fbo));
         gl.framebuffer_texture_2d(
@@ -110,6 +126,54 @@ impl Renderer {
         let u_shadow_map = gl.get_uniform_location(&program, "u_shadow_map");
         let u_light_space_matrix = gl.get_uniform_location(&program, "u_light_space_matrix");
 
+        let u_flashlight_shadow_map = gl.get_uniform_location(&program, "u_flashlight_shadow_map");
+        let u_flashlight_space_matrix = gl.get_uniform_location(&program, "u_flashlight_space_matrix");
+
+        let u_flashlight_on = gl.get_uniform_location(&program, "u_flashlight_on");
+        let u_flashlight_pos = gl.get_uniform_location(&program, "u_flashlight_pos");
+        let u_flashlight_dir = gl.get_uniform_location(&program, "u_flashlight_dir");
+        let u_flashlight_cutoff = gl.get_uniform_location(&program, "u_flashlight_cutoff");
+        let u_flashlight_outer_cutoff = gl.get_uniform_location(&program, "u_flashlight_outer_cutoff");
+        let u_shadow_map_size = gl.get_uniform_location(&program, "u_shadow_map_size");
+
+        // --- Flashlight Shadow Map Init ---
+        let flashlight_shadow_fbo = gl.create_framebuffer().ok_or("Failed to create flashlight shadow FBO")?;
+        let flashlight_shadow_map_texture = gl.create_texture().ok_or("Failed to create flashlight shadow texture")?;
+        
+        gl.bind_texture(WebGl2RenderingContext::TEXTURE_2D, Some(&flashlight_shadow_map_texture));
+        gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_array_buffer_view(
+            WebGl2RenderingContext::TEXTURE_2D, 
+            0, 
+            WebGl2RenderingContext::DEPTH_COMPONENT24 as i32, 
+            SHADOW_WIDTH, 
+            SHADOW_HEIGHT, 
+            0, 
+            WebGl2RenderingContext::DEPTH_COMPONENT, 
+            WebGl2RenderingContext::UNSIGNED_INT, 
+            None
+        )?;
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_MIN_FILTER, WebGl2RenderingContext::NEAREST as i32);
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_MAG_FILTER, WebGl2RenderingContext::NEAREST as i32);
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_WRAP_S, WebGl2RenderingContext::CLAMP_TO_EDGE as i32);
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_WRAP_T, WebGl2RenderingContext::CLAMP_TO_EDGE as i32);
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_COMPARE_MODE, WebGl2RenderingContext::COMPARE_REF_TO_TEXTURE as i32);
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_COMPARE_FUNC, WebGl2RenderingContext::LEQUAL as i32);
+
+        gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&flashlight_shadow_fbo));
+        gl.framebuffer_texture_2d(
+            WebGl2RenderingContext::FRAMEBUFFER, 
+            WebGl2RenderingContext::DEPTH_ATTACHMENT, 
+            WebGl2RenderingContext::TEXTURE_2D, 
+            Some(&flashlight_shadow_map_texture), 
+            0
+        );
+        // Check status (reuse check from above or do it here)
+        if gl.check_framebuffer_status(WebGl2RenderingContext::FRAMEBUFFER) != WebGl2RenderingContext::FRAMEBUFFER_COMPLETE {
+            return Err(JsValue::from_str("Flashlight Shadow Framebuffer not complete"));
+        }
+        gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, None);
+
+
         let mut renderer = Self {
             gl,
             program,
@@ -126,11 +190,21 @@ impl Renderer {
             u_view_pos,
             u_shadow_map,
             u_light_space_matrix,
+            u_flashlight_on,
+            u_flashlight_pos,
+            u_flashlight_dir,
+            u_flashlight_cutoff,
+            u_flashlight_outer_cutoff,
+            u_shadow_map_size,
             shadow_program,
             shadow_fbo,
             shadow_map_texture,
             u_shadow_light_space,
             u_shadow_model,
+            flashlight_shadow_fbo,
+            flashlight_shadow_map_texture,
+            u_flashlight_shadow_map,
+            u_flashlight_space_matrix,
         };
 
         // Default primitives
@@ -152,6 +226,17 @@ impl Renderer {
         self.gl.uniform_matrix4fv_with_f32_array(self.u_shadow_light_space.as_ref(), false, &light_space_matrix.to_cols_array());
         
         // Cull front faces for shadows to reduce peter panning
+        self.gl.cull_face(WebGl2RenderingContext::FRONT);
+        self.gl.enable(WebGl2RenderingContext::CULL_FACE);
+    }
+
+    pub fn begin_flashlight_shadow_pass(&self, light_space_matrix: Mat4) {
+        self.gl.bind_framebuffer(WebGl2RenderingContext::FRAMEBUFFER, Some(&self.flashlight_shadow_fbo));
+        self.gl.viewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT);
+        self.gl.clear(WebGl2RenderingContext::DEPTH_BUFFER_BIT);
+        self.gl.use_program(Some(&self.shadow_program)); // Reuse shadow program
+        self.gl.uniform_matrix4fv_with_f32_array(self.u_shadow_light_space.as_ref(), false, &light_space_matrix.to_cols_array());
+        
         self.gl.cull_face(WebGl2RenderingContext::FRONT);
         self.gl.enable(WebGl2RenderingContext::CULL_FACE);
     }
@@ -184,12 +269,26 @@ impl Renderer {
         self.gl.active_texture(WebGl2RenderingContext::TEXTURE1);
         self.gl.bind_texture(WebGl2RenderingContext::TEXTURE_2D, Some(&self.shadow_map_texture));
         self.gl.uniform1i(self.u_shadow_map.as_ref(), 1);
+        self.gl.uniform2f(self.u_shadow_map_size.as_ref(), SHADOW_WIDTH as f32, SHADOW_HEIGHT as f32);
+
+        // Bind Flashlight Shadow Map
+        self.gl.active_texture(WebGl2RenderingContext::TEXTURE2);
+        self.gl.bind_texture(WebGl2RenderingContext::TEXTURE_2D, Some(&self.flashlight_shadow_map_texture));
+        self.gl.uniform1i(self.u_flashlight_shadow_map.as_ref(), 2);
     }
 
-    pub fn set_lights(&self, light_pos: Vec3, light_dir: Vec3, view_pos: Vec3) {
+    pub fn set_lights(&self, light_pos: Vec3, light_dir: Vec3, view_pos: Vec3, 
+        flashlight_on: bool, flashlight_pos: Vec3, flashlight_dir: Vec3) {
          self.gl.uniform3f(self.u_light_pos.as_ref(), light_pos.x, light_pos.y, light_pos.z);
          self.gl.uniform3f(self.u_light_dir.as_ref(), light_dir.x, light_dir.y, light_dir.z);
          self.gl.uniform3f(self.u_view_pos.as_ref(), view_pos.x, view_pos.y, view_pos.z);
+
+         self.gl.uniform1i(self.u_flashlight_on.as_ref(), if flashlight_on { 1 } else { 0 });
+         self.gl.uniform3f(self.u_flashlight_pos.as_ref(), flashlight_pos.x, flashlight_pos.y, flashlight_pos.z);
+         self.gl.uniform3f(self.u_flashlight_dir.as_ref(), flashlight_dir.x, flashlight_dir.y, flashlight_dir.z);
+         // Default values for flashlight cone (inner/outer cutoff)
+         self.gl.uniform1f(self.u_flashlight_cutoff.as_ref(), (12.5f32).to_radians().cos());
+         self.gl.uniform1f(self.u_flashlight_outer_cutoff.as_ref(), (17.5f32).to_radians().cos());
     }
 
     pub fn draw_mesh(
@@ -198,6 +297,7 @@ impl Renderer {
         model: Mat4,
         view_proj: Mat4,
         light_space_matrix: Mat4,
+        flashlight_space_matrix: Mat4,
         color: [f32; 4],
         texture_name: Option<&str>
     ) -> Result<(), JsValue> {
@@ -209,6 +309,7 @@ impl Renderer {
             self.gl.uniform_matrix4fv_with_f32_array(self.u_model.as_ref(), false, &model.to_cols_array());
             self.gl.uniform_matrix3fv_with_f32_array(self.u_normal_matrix.as_ref(), false, &normal_matrix.to_cols_array());
             self.gl.uniform_matrix4fv_with_f32_array(self.u_light_space_matrix.as_ref(), false, &light_space_matrix.to_cols_array());
+            self.gl.uniform_matrix4fv_with_f32_array(self.u_flashlight_space_matrix.as_ref(), false, &flashlight_space_matrix.to_cols_array());
             self.gl.uniform4f(self.u_color.as_ref(), color[0], color[1], color[2], color[3]);
     
             if let Some(tex_name) = texture_name {
@@ -362,6 +463,8 @@ fn compile_shadow_program(gl: &WebGl2RenderingContext) -> Result<WebGlProgram, J
 
 fn compile_shader_program(gl: &WebGl2RenderingContext) -> Result<WebGlProgram, JsValue> {
     let vs_src = r#"#version 300 es
+        precision mediump float; // Added precision for vertex shader
+
         layout(location=0) in vec3 a_position;
         layout(location=1) in vec3 a_normal;
         layout(location=2) in vec2 a_tex_coord;
@@ -370,11 +473,13 @@ fn compile_shader_program(gl: &WebGl2RenderingContext) -> Result<WebGlProgram, J
         uniform mat4 u_model;
         uniform mat3 u_normal_matrix;
         uniform mat4 u_light_space_matrix;
+        uniform mat4 u_flashlight_space_matrix; // New uniform
 
         out vec3 v_normal;
         out vec3 v_frag_pos;
         out vec2 v_tex_coord;
         out vec4 v_frag_pos_light_space;
+        out vec4 v_frag_pos_flashlight_space; // New output
 
         void main() {
             gl_Position = u_mvp * vec4(a_position, 1.0);
@@ -382,6 +487,7 @@ fn compile_shader_program(gl: &WebGl2RenderingContext) -> Result<WebGlProgram, J
             v_normal = u_normal_matrix * a_normal;
             v_tex_coord = a_tex_coord;
             v_frag_pos_light_space = u_light_space_matrix * vec4(v_frag_pos, 1.0);
+            v_frag_pos_flashlight_space = u_flashlight_space_matrix * vec4(v_frag_pos, 1.0);
         }
     "#;
 
@@ -391,41 +497,47 @@ fn compile_shader_program(gl: &WebGl2RenderingContext) -> Result<WebGlProgram, J
         uniform vec4 u_color;
         uniform int u_use_texture;
         uniform sampler2D u_texture;
-        uniform sampler2D u_shadow_map;
+        uniform mediump sampler2DShadow u_shadow_map; 
+        uniform mediump sampler2DShadow u_flashlight_shadow_map; // New uniform
+        uniform vec2 u_shadow_map_size; 
         
         uniform vec3 u_light_pos;
         uniform vec3 u_light_dir;
         uniform vec3 u_view_pos;
 
+        // Flashlight uniforms
+        uniform int u_flashlight_on;
+        uniform vec3 u_flashlight_pos;
+        uniform vec3 u_flashlight_dir;
+        uniform float u_flashlight_cutoff;
+        uniform float u_flashlight_outer_cutoff;
+
         in vec3 v_normal;
         in vec3 v_frag_pos;
         in vec2 v_tex_coord;
         in vec4 v_frag_pos_light_space;
+        in vec4 v_frag_pos_flashlight_space;
 
         out vec4 fragColor;
 
-        float calculate_shadow(vec4 fragPosLightSpace, vec3 normal, vec3 lightDir) {
+        float calculate_shadow(vec4 fragPosLightSpace, vec3 normal, vec3 lightDir, mediump sampler2DShadow shadowMap) {
             vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
             projCoords = projCoords * 0.5 + 0.5;
             
             if(projCoords.z > 1.0) return 0.0;
 
-            float closestDepth = texture(u_shadow_map, projCoords.xy).r; 
-            float currentDepth = projCoords.z;
-            
             float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.0005);
-            // PCF (simple 3x3)
+            
             float shadow = 0.0;
-            vec2 texelSize = 1.0 / vec2(2048.0, 2048.0);
+            vec2 texelSize = 1.0 / u_shadow_map_size; 
             for(int x = -1; x <= 1; ++x) {
                 for(int y = -1; y <= 1; ++y) {
-                    float pcfDepth = texture(u_shadow_map, projCoords.xy + vec2(x, y) * texelSize).r; 
-                    shadow += currentDepth - bias > pcfDepth ? 1.0 : 0.0;        
+                    shadow += texture(shadowMap, vec3(projCoords.xy + vec2(x, y) * texelSize, projCoords.z - bias));
                 }    
             }
             shadow /= 9.0;
             
-            return shadow;
+            return shadow; // Returns 1.0 for LIT, 0.0 for SHADOW
         }
 
         void main() {
@@ -437,29 +549,54 @@ fn compile_shader_program(gl: &WebGl2RenderingContext) -> Result<WebGlProgram, J
             }
 
             vec3 norm = normalize(v_normal);
-            vec3 lightDir = normalize(u_light_pos - v_frag_pos); // Positional light logic vs Directional?
-            // "Spotlight shining down". If treating as Directional:
-            // vec3 lightDir = normalize(-u_light_dir); 
-            // Existing code used Point light logic for diffuse/specular (light_pos - frag_pos).
-            // But passed light_dir as well.
-            // Let's use light_pos for direction to keep consistent with shadow map origin.
             
+            // --- Directional Light (Sun) ---
+            vec3 dirLightDir = normalize(u_light_pos - v_frag_pos); 
             vec3 viewDir = normalize(u_view_pos - v_frag_pos);
-            vec3 halfwayDir = normalize(lightDir + viewDir);
 
-            vec3 ambient = 0.3 * baseColor.rgb; // Increased ambient slightly
+            vec3 ambient = 0.1 * baseColor.rgb; 
             
-            float diff = max(dot(norm, lightDir), 0.0);
-            vec3 diffuse = diff * baseColor.rgb;
-            
-            float spec = pow(max(dot(norm, halfwayDir), 0.0), 32.0);
-            vec3 specular = vec3(0.5) * spec; 
+            // Pass the specific shadow map
+            float shadow = calculate_shadow(v_frag_pos_light_space, norm, dirLightDir, u_shadow_map);
 
-            float shadow = calculate_shadow(v_frag_pos_light_space, norm, lightDir);
+            float diffDir = max(dot(norm, dirLightDir), 0.0);
+            vec3 diffuseDir = diffDir * baseColor.rgb;
             
-            vec3 lighting = (ambient + (1.0 - shadow) * (diffuse + specular));
+            vec3 halfwayDirDir = normalize(dirLightDir + viewDir);
+            float specDir = pow(max(dot(norm, halfwayDirDir), 0.0), 32.0);
+            vec3 specularDir = vec3(0.5) * specDir; 
+
+            vec3 combinedLight = ambient;
+            // FIX: shadow is 1.0 (LIT) -> use shadow directly
+            combinedLight += shadow * (diffuseDir + specularDir);
+
+            // --- Flashlight (Spotlight) ---
+            if (u_flashlight_on == 1) {
+                vec3 flashLightDir = normalize(u_flashlight_pos - v_frag_pos);
+                float theta = dot(flashLightDir, normalize(-u_flashlight_dir)); 
+                float epsilon = u_flashlight_cutoff - u_flashlight_outer_cutoff;
+                float intensity = clamp((theta - u_flashlight_outer_cutoff) / epsilon, 0.0, 1.0);
+
+                if (intensity > 0.0) {
+                     // Calculate Flashlight Shadow
+                     float flash_shadow = calculate_shadow(v_frag_pos_flashlight_space, norm, flashLightDir, u_flashlight_shadow_map);
+
+                     // Attenuation
+                     float distance = length(u_flashlight_pos - v_frag_pos);
+                     float attenuation = 1.0 / (1.0 + 0.09 * distance + 0.032 * (distance * distance)); 
+
+                     float diffFlash = max(dot(norm, flashLightDir), 0.0);
+                     vec3 diffuseFlash = diffFlash * baseColor.rgb;
+                     
+                     vec3 halfwayDirFlash = normalize(flashLightDir + viewDir);
+                     float specFlash = pow(max(dot(norm, halfwayDirFlash), 0.0), 32.0);
+                     vec3 specularFlash = vec3(0.5) * specFlash; 
+                     
+                     combinedLight += flash_shadow * attenuation * intensity * (diffuseFlash + specularFlash);
+                }
+            }
             
-            fragColor = vec4(lighting, baseColor.a);
+            fragColor = vec4(combinedLight, baseColor.a);
         }
     "#;
 

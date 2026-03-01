@@ -19,12 +19,15 @@ class WssMain extends HTMLElement {
             down: false,
             yaw: -90.0, // Face -Z
             pitch: 0.0,
+            flashlight: false,
         };
     }
 
-    connectedCallback() {
+    async connectedCallback() {
         if (this.started) return;
         this.started = true;
+
+        await this.loadSettings();
 
         // Set initial size BEFORE transferring control
         this.canvas.width = window.innerWidth;
@@ -41,6 +44,34 @@ class WssMain extends HTMLElement {
             this.canvas.requestPointerLock();
         });
         document.addEventListener('mousemove', this.handleMouseMove.bind(this));
+    }
+
+    async loadSettings() {
+        const defaultSettings = {
+            keybindings: {
+                forward: 'KeyW',
+                backward: 'KeyS',
+                left: 'KeyA',
+                right: 'KeyD',
+                up: 'Space',
+                down: 'ShiftLeft',
+                flashlight: 'KeyG'
+            }
+        };
+
+        try {
+            const response = await fetch('settings.json');
+            if (response.ok) {
+                this.settings = await response.json();
+            } else {
+                console.warn("settings.json not found, using defaults");
+                this.settings = defaultSettings;
+                // Optional: You could try to POST to save these defaults if you had a backend endpoint
+            }
+        } catch (e) {
+            console.warn("Failed to load settings.json", e);
+            this.settings = defaultSettings;
+        }
     }
 
     disconnectedCallback() {
@@ -60,15 +91,24 @@ class WssMain extends HTMLElement {
     }
 
     handleKey(isDown, e) {
+        if (!this.settings) return;
+        const keys = this.settings.keybindings;
         let changed = false;
-        switch(e.code) {
-            case 'KeyW': this.inputState.forward = isDown; changed = true; break;
-            case 'KeyS': this.inputState.backward = isDown; changed = true; break;
-            case 'KeyA': this.inputState.left = isDown; changed = true; break;
-            case 'KeyD': this.inputState.right = isDown; changed = true; break;
-            case 'Space': this.inputState.up = isDown; changed = true; break;
-            case 'ShiftLeft': this.inputState.down = isDown; changed = true; break;
+
+        // Movement keys (held down)
+        if (e.code === keys.forward) { this.inputState.forward = isDown; changed = true; }
+        if (e.code === keys.backward) { this.inputState.backward = isDown; changed = true; }
+        if (e.code === keys.left) { this.inputState.left = isDown; changed = true; }
+        if (e.code === keys.right) { this.inputState.right = isDown; changed = true; }
+        if (e.code === keys.up) { this.inputState.up = isDown; changed = true; }
+        if (e.code === keys.down) { this.inputState.down = isDown; changed = true; }
+        
+        // Toggles (on key down only)
+        if (isDown && e.code === keys.flashlight) {
+             this.inputState.flashlight = !this.inputState.flashlight; 
+             changed = true; 
         }
+
         if (changed && this.worker) {
             this.worker.postMessage({ type: 'input', state: this.inputState });
         }

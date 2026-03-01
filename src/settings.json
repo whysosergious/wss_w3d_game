@@ -1,0 +1,11 @@
+{
+    "keybindings": {
+        "forward": "KeyW",
+        "backward": "KeyS",
+        "left": "KeyA",
+        "right": "KeyD",
+        "up": "Space",
+        "down": "ShiftLeft",
+        "flashlight": "KeyG"
+    }
+}

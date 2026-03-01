@@ -12,7 +12,8 @@ let inputState = {
     up: false,
     down: false,
     yaw: -90.0,
-    pitch: 0.0
+    pitch: 0.0,
+    flashlight: false
 };
 
 // ... (animate function) ...
@@ -103,7 +104,8 @@ function animate() {
                 inputState.up,
                 inputState.down,
                 inputState.yaw,
-                inputState.pitch
+                inputState.pitch,
+                inputState.flashlight
             );
 
             draw_frame();

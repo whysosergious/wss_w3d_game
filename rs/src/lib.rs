@@ -75,7 +75,7 @@ pub fn load_model(name: String, obj_text: String) -> Result<(), JsValue> {
 #[wasm_bindgen]
 pub fn set_input_state(
     forward: bool, backward: bool, left: bool, right: bool,
-    up: bool, down: bool, yaw: f32, pitch: f32
+    up: bool, down: bool, yaw: f32, pitch: f32, flashlight: bool
 ) {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
@@ -87,6 +87,7 @@ pub fn set_input_state(
         state.input.down = down;
         state.camera.yaw = yaw;
         state.camera.pitch = pitch;
+        state.input.flashlight = flashlight;
     });
 }
 
@@ -154,25 +155,66 @@ pub fn draw_frame() -> Result<(), JsValue> {
              renderer.draw_shadow_mesh("fox", model)?; 
         }
 
-        // --- Main Pass ---
-        renderer.begin_main_pass();
-
         // Camera Vectors
         let (sin_yaw, cos_yaw) = state.camera.yaw.to_radians().sin_cos();
         let (sin_pitch, cos_pitch) = state.camera.pitch.to_radians().sin_cos();
         let front = Vec3::new(cos_yaw * cos_pitch, sin_pitch, sin_yaw * cos_pitch).normalize();
+
+        // --- Flashlight Shadow Pass ---
+        // Create view/proj from Flashlight (Camera) perspective
+        let flashlight_proj = Mat4::perspective_rh(90.0f32.to_radians(), 1.0, 0.1, 50.0); // 1.0 aspect for square shadow map
+        let flashlight_view = Mat4::look_at_rh(state.camera.position, state.camera.position + front, Vec3::Y);
+        let flashlight_space_matrix = flashlight_proj * flashlight_view;
+
+        if state.input.flashlight {
+             renderer.begin_flashlight_shadow_pass(flashlight_space_matrix);
+             // Draw Objects for Flashlight Shadow
+             // Floor
+             let model = Mat4::from_scale_rotation_translation(Vec3::new(200.0, 0.2, 200.0), Quat::IDENTITY, Vec3::new(0.0, 0.0, 0.0));
+             if renderer.meshes.contains_key("cube_obj") {
+                  renderer.draw_shadow_mesh("cube_obj", model)?;
+             }
+             // Cubes
+             if renderer.meshes.contains_key("cube_obj") {
+                 for handle in &state.physics.cube_handles {
+                     if let Some(body) = state.physics.rigid_body_set.get(*handle) {
+                         let t = body.translation();
+                         let r = body.rotation();
+                         let pos = Vec3::new(t.x, t.y, t.z);
+                         let rot = Quat::from_xyzw(r.i, r.j, r.k, r.w);
+                         let model = Mat4::from_scale_rotation_translation(Vec3::ONE, rot, pos);
+                         renderer.draw_shadow_mesh("cube_obj", model)?;
+                     }
+                 }
+             }
+             // Fox
+             if renderer.meshes.contains_key("fox") {
+                  let model = Mat4::from_scale_rotation_translation(Vec3::new(0.05, 0.05, 0.05), Quat::from_rotation_y(1.5), Vec3::new(-2.0, 0.0, 0.0));
+                  renderer.draw_shadow_mesh("fox", model)?; 
+             }
+        }
+
+        // --- Main Pass ---
+        renderer.begin_main_pass();
+
+        // Camera Vectors (Recalculate or reuse front? Front is already calc'd above)
+        // ... (front already calc'd)
         let view = Mat4::look_at_rh(state.camera.position, state.camera.position + front, Vec3::Y);
         let aspect = renderer.aspect_ratio();
         let projection = Mat4::perspective_rh(45.0f32.to_radians(), aspect, 0.1, 100.0);
         let view_proj = projection * view;
 
         // Lights
-        renderer.set_lights(light_pos, light_dir, state.camera.position);
+        // Pass flashlight state and direction
+        renderer.set_lights(
+            light_pos, light_dir, state.camera.position,
+            state.input.flashlight, state.camera.position, front
+        );
 
         // --- Draw Floor ---
         let model = Mat4::from_scale_rotation_translation(Vec3::new(200.0, 0.2, 200.0), Quat::IDENTITY, Vec3::new(0.0, 0.0, 0.0));
         if renderer.meshes.contains_key("cube_obj") {
-             renderer.draw_mesh("cube_obj", model, view_proj, light_space_matrix, [0.3, 0.35, 0.3, 1.0], None)?;
+             renderer.draw_mesh("cube_obj", model, view_proj, light_space_matrix, flashlight_space_matrix, [0.3, 0.35, 0.3, 1.0], None)?;
         }
 
         // --- Draw Physics Bodies (Cubes) ---
@@ -186,7 +228,7 @@ pub fn draw_frame() -> Result<(), JsValue> {
                     
                     // Cube collider was 0.5 half-extent -> Size 1.0
                     let model = Mat4::from_scale_rotation_translation(Vec3::ONE, rot, pos);
-                    renderer.draw_mesh("cube_obj", model, view_proj, light_space_matrix, [0.8, 0.5, 0.2, 1.0], None)?;
+                    renderer.draw_mesh("cube_obj", model, view_proj, light_space_matrix, flashlight_space_matrix, [0.8, 0.5, 0.2, 1.0], None)?;
                 }
             }
         }
@@ -196,12 +238,12 @@ pub fn draw_frame() -> Result<(), JsValue> {
         let view_rot_inv = Mat3::from_mat4(view).transpose();
         let sprite_rotation = Quat::from_mat3(&view_rot_inv);
         let model = Mat4::from_scale_rotation_translation(Vec3::new(1.0, 1.0, 1.0), sprite_rotation, Vec3::new(2.0, 1.0, 0.0));
-        renderer.draw_mesh("quad", model, view_proj, light_space_matrix, [1.0, 1.0, 1.0, 1.0], Some("shelly"))?;
+        renderer.draw_mesh("quad", model, view_proj, light_space_matrix, flashlight_space_matrix, [1.0, 1.0, 1.0, 1.0], Some("shelly"))?;
 
         // --- Draw Fox (Model) ---
         if renderer.meshes.contains_key("fox") {
              let model = Mat4::from_scale_rotation_translation(Vec3::new(0.05, 0.05, 0.05), Quat::from_rotation_y(1.5), Vec3::new(-2.0, 0.0, 0.0));
-             renderer.draw_mesh("fox", model, view_proj, light_space_matrix, [1.0, 1.0, 1.0, 1.0], Some("fox_tex"))?; 
+             renderer.draw_mesh("fox", model, view_proj, light_space_matrix, flashlight_space_matrix, [1.0, 1.0, 1.0, 1.0], Some("fox_tex"))?; 
         }
 
         Ok(())
